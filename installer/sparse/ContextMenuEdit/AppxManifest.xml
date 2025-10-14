@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         IgnorableNamespaces="uap">
+  <Identity Name="NiftyWhiz.PowerToys.ContextMenuEdit"
+            Publisher="CN=NiftyWhiz"
+            Version="0.1.0.0"/>
+  <Properties>
+    <DisplayName>Context Menu Edit (PowerToys)</DisplayName>
+    <Logo>assets/Logo.png</Logo>
+    <PublisherDisplayName>NiftyWhiz</PublisherDisplayName>
+    <Description>Grants package identity for Windows 11 context menu integration</Description>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0"/>
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us"/>
+  </Resources>
+  <Applications>
+    <Application Id="ContextMenuEditApp" Executable="PowerToys.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Context Menu Edit" Description="Context menu integration" Square150x150Logo="assets/Logo.png" Square44x44Logo="assets/SmallLogo.png"/>
+      <Extensions>
+        <uap:Extension Category="windows.fileExplorerContextMenus">
+          <uap:FileExplorerContextMenus>
+            <uap:Item Type="Directory"/>
+            <uap:Item Type="DirectoryBackground"/>
+            <uap:Item Type="File"/>
+          </uap:FileExplorerContextMenus>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

@@ -1,0 +1,27 @@
+{
+  "Enabled": true,
+  "UseCascade": true,
+  "Actions": [
+    {
+      "Id": "open_ps_here",
+      "Label": "Open PowerShell here",
+      "IconPath": "%SystemRoot%/System32/WindowsPowerShell/v1.0/powershell.exe,0",
+      "Scope": "background",
+      "ExtendedOnly": false,
+      "RequiresElevation": false,
+      "Command": "powershell.exe",
+      "Arguments": "-NoExit -Command Set-Location \"%W\""
+    },
+    {
+      "Id": "open_vscode",
+      "Label": "Open with VS Code",
+      "IconPath": "%ProgramFiles%/Microsoft VS Code/Code.exe,0",
+      "Scope": "*",
+      "FileTypes": ".*",
+      "ExtendedOnly": false,
+      "RequiresElevation": false,
+      "Command": "%ProgramFiles%/Microsoft VS Code/Code.exe",
+      "Arguments": "\"%V\""
+    }
+  ]
+}

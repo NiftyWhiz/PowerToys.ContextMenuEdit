@@ -1,0 +1,8 @@
+import "inspectable.idl";
+import "oaidl.idl";
+import "ocidl.idl";
+
+[uuid(7D2A0C4B-8E4F-4C9B-8C1D-0B3B1D6E2C30)]
+library ContextMenuEditLib
+{
+}
