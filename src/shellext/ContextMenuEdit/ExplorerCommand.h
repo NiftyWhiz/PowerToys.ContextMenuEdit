@@ -4,6 +4,7 @@
 #include <wrl.h>
 #include <string>
 #include <vector>
+#include <atomic>
 
 struct ActionItem {
     std::wstring id;
@@ -23,9 +24,9 @@ public:
     IFACEMETHODIMP_(ULONG) Release() override;
 
     // IExplorerCommand
-    IFACEMETHODIMP GetTitle(IShellItemArray* psiItemArray, LPWSTR* *ppszName) override;
-    IFACEMETHODIMP GetIcon(IShellItemArray* psiItemArray, LPWSTR* *ppszIcon) override;
-    IFACEMETHODIMP GetToolTip(IShellItemArray*, LPWSTR* *ppszInfotip) override;
+    IFACEMETHODIMP GetTitle(IShellItemArray* psiItemArray, LPWSTR** ppszName) override;
+    IFACEMETHODIMP GetIcon(IShellItemArray* psiItemArray, LPWSTR** ppszIcon) override;
+    IFACEMETHODIMP GetToolTip(IShellItemArray*, LPWSTR** ppszInfotip) override;
     IFACEMETHODIMP GetCanonicalName(GUID* pguidCommandName) override;
     IFACEMETHODIMP GetState(IShellItemArray*, BOOL fOkToBeSlow, EXPCMDSTATE* pCmdState) override;
     IFACEMETHODIMP Invoke(IShellItemArray* psiItemArray, IBindCtx* pbc) override;

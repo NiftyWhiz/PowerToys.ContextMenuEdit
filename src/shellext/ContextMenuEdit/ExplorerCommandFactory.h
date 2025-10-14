@@ -1,6 +1,7 @@
 #pragma once
 #include <wrl.h>
 #include <shobjidl_core.h>
+#include <atomic>
 #include "ExplorerCommand.h"
 
 // {E5B37D79-4DDA-4A78-B2C9-7B1E1FB1E4A4}
