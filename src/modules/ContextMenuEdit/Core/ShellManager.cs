@@ -2,7 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Net.Http;
+using System.Linq;
+using System.Security;
 using System.Threading.Tasks;
 using Microsoft.PowerToys.Settings.UI.Library;
 using ManagedCommon;
@@ -25,6 +26,7 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
                 var exePath = Path.Combine(path, "shell.exe");
                 if (File.Exists(exePath))
                 {
+                    Logger.LogInfo($"ShellManager: Found Shell installation at {path}");
                     return path;
                 }
             }
@@ -40,16 +42,18 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
                         var exePath = Path.Combine(pathDir, "shell.exe");
                         if (File.Exists(exePath))
                         {
+                            Logger.LogInfo($"ShellManager: Found Shell in PATH at {pathDir}");
                             return pathDir;
                         }
                     }
                     catch (Exception ex)
                     {
-                        Logger.LogError("Error checking PATH directory", ex);
+                        Logger.LogWarning($"ShellManager: Error checking PATH directory {pathDir}: {ex.Message}");
                     }
                 }
             }
 
+            Logger.LogInfo("ShellManager: Shell installation not found");
             return null;
         }
 
@@ -66,7 +70,40 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
                 throw new InvalidOperationException("Nilesoft Shell is not installed");
             }
 
-            return Path.Combine(installPath, "imports", "powertoys.nss");
+            // Try per-user location first to avoid permission issues
+            var userConfigPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Nilesoft Shell", "imports", "powertoys.nss");
+
+            var userImportsDir = Path.GetDirectoryName(userConfigPath)!;
+            if (!Directory.Exists(userImportsDir))
+            {
+                try
+                {
+                    Directory.CreateDirectory(userImportsDir);
+                    Logger.LogInfo($"ShellManager: Created user imports directory: {userImportsDir}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning($"ShellManager: Could not create user imports directory: {ex.Message}");
+                }
+            }
+
+            // Test write permission
+            if (CanWriteToDirectory(Path.GetDirectoryName(userConfigPath)!))
+            {
+                return userConfigPath;
+            }
+
+            // Fallback to install directory (may require elevation)
+            var installConfigPath = Path.Combine(installPath, "imports", "powertoys.nss");
+            if (CanWriteToDirectory(Path.GetDirectoryName(installConfigPath)!))
+            {
+                return installConfigPath;
+            }
+
+            Logger.LogWarning($"ShellManager: No writable config path found, using: {userConfigPath}");
+            return userConfigPath;
         }
 
         public static string GetShellBackupPath()
@@ -79,6 +116,27 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
             return powerToysData;
         }
 
+        private static bool CanWriteToDirectory(string directory)
+        {
+            try
+            {
+                var testFile = Path.Combine(directory, $"test_write_{Guid.NewGuid():N}.tmp");
+                File.WriteAllText(testFile, "test");
+                File.Delete(testFile);
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                Logger.LogInfo($"ShellManager: No write access to directory: {directory}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"ShellManager: Error testing write access to {directory}: {ex.Message}");
+                return false;
+            }
+        }
+
         public static async Task<bool> ReloadShellConfigAsync()
         {
             try
@@ -86,14 +144,18 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
                 var installPath = DetectShellInstallation();
                 if (string.IsNullOrEmpty(installPath))
                 {
+                    Logger.LogError("ShellManager: Cannot reload - Shell installation not found");
                     return false;
                 }
 
                 var shellExe = Path.Combine(installPath, "shell.exe");
                 if (!File.Exists(shellExe))
                 {
+                    Logger.LogError($"ShellManager: Shell executable not found at {shellExe}");
                     return false;
                 }
+
+                Logger.LogInfo("ShellManager: Reloading Shell configuration");
 
                 // Use Shell's reload command
                 var process = Process.Start(new ProcessStartInfo
@@ -102,18 +164,40 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
                     Arguments = "reload",
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
                 });
 
                 if (process != null)
                 {
+                    var stdout = await process.StandardOutput.ReadToEndAsync();
+                    var stderr = await process.StandardError.ReadToEndAsync();
+                    
                     await process.WaitForExitAsync();
-                    return process.ExitCode == 0;
+                    
+                    if (process.ExitCode == 0)
+                    {
+                        Logger.LogInfo("ShellManager: Shell configuration reloaded successfully");
+                        if (!string.IsNullOrEmpty(stdout))
+                        {
+                            Logger.LogInfo($"ShellManager: Shell stdout: {stdout}");
+                        }
+                        return true;
+                    }
+                    else
+                    {
+                        Logger.LogError($"ShellManager: Shell reload failed with exit code {process.ExitCode}");
+                        if (!string.IsNullOrEmpty(stderr))
+                        {
+                            Logger.LogError($"ShellManager: Shell stderr: {stderr}");
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
-                Logger.LogError("Failed to reload Shell config", ex);
+                Logger.LogError("ShellManager: Failed to reload Shell config", ex);
             }
 
             return false;
@@ -140,7 +224,7 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
             }
             catch (Exception ex)
             {
-                Logger.LogError("Failed to get Shell version", ex);
+                Logger.LogError("ShellManager: Failed to get Shell version", ex);
                 return "Error reading version";
             }
         }
@@ -149,24 +233,20 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
         {
             try
             {
-                Logger.LogInfo("Starting Nilesoft Shell download");
+                Logger.LogInfo("ShellManager: Starting Nilesoft Shell download");
                 
-                // This would need to be implemented based on actual Shell distribution
-                // For now, direct user to manual installation
-                var installPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nilesoft Shell");
-                Directory.CreateDirectory(installPath);
+                // For now, this is a placeholder that returns false
+                // In a full implementation, this would:
+                // 1. Download from nilesoft.org/download
+                // 2. Extract to user's local directory
+                // 3. Run any required registration
                 
-                // In a real implementation, you'd:
-                // 1. Download shell.zip from nilesoft.org
-                // 2. Extract to LocalApplicationData
-                // 3. Run installation/registration
-                
-                // For MVP, we'll just create the directory and prompt user
-                return false; // Return false to prompt manual installation
+                Logger.LogInfo("ShellManager: Auto-install not yet implemented - user must install manually");
+                return false;
             }
             catch (Exception ex)
             {
-                Logger.LogError("Failed to download/install Shell", ex);
+                Logger.LogError("ShellManager: Failed to download/install Shell", ex);
                 return false;
             }
         }

@@ -8,7 +8,7 @@ using ManagedCommon;
 
 namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
 {
-    public class ShellConfigGenerator
+    public static class ShellConfigGenerator
     {
         private const string ConfigHeader = @"// PowerToys Context Menu Edit Configuration
 // Generated automatically - do not edit manually
@@ -17,40 +17,43 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
 
 ";
 
-        public string GenerateConfig(ContextMenuEditSettings settings)
+        public static string GenerateConfig(ContextMenuEditSettings settings)
         {
             if (settings == null)
                 throw new ArgumentNullException(nameof(settings));
 
             var config = new StringBuilder(ConfigHeader);
             
-            // Import user's existing config if it exists
-            config.AppendLine("// Import user's custom configuration");
-            config.AppendLine("import 'user-custom.nss'");
+            // Import user's existing config if it exists (conditional import)
+            config.AppendLine("// Import user's custom configuration (if exists)");
+            config.AppendLine("import(file='user-custom.nss' exists)");
             config.AppendLine();
 
             // Generate removals first
-            if (settings.Removals.Any(r => r.Enabled))
+            var enabledRemovals = settings.Removals.Where(r => r.Enabled).ToList();
+            if (enabledRemovals.Any())
             {
-                GenerateRemovals(config, settings.Removals.Where(r => r.Enabled));
+                GenerateRemovals(config, enabledRemovals);
             }
 
             // Generate modifications
-            if (settings.Modifications.Any(m => m.Enabled))
+            var enabledModifications = settings.Modifications.Where(m => m.Enabled).ToList();
+            if (enabledModifications.Any())
             {
-                GenerateModifications(config, settings.Modifications.Where(m => m.Enabled));
+                GenerateModifications(config, enabledModifications);
             }
 
             // Generate new items
-            if (settings.NewActions.Any(a => a.Enabled))
+            var enabledActions = settings.NewActions.Where(a => a.Enabled && !string.IsNullOrEmpty(a.Title) && !string.IsNullOrEmpty(a.Command)).ToList();
+            if (enabledActions.Any())
             {
-                GenerateNewItems(config, settings.NewActions.Where(a => a.Enabled));
+                GenerateNewItems(config, enabledActions);
             }
 
             return config.ToString();
         }
 
-        private void GenerateRemovals(StringBuilder config, IEnumerable<ContextMenuRemoval> removals)
+        private static void GenerateRemovals(StringBuilder config, List<ContextMenuRemoval> removals)
         {
             config.AppendLine("// Remove unwanted context menu items");
             config.AppendLine("modify");
@@ -74,7 +77,7 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
             config.AppendLine();
         }
 
-        private void GenerateModifications(StringBuilder config, IEnumerable<ContextMenuModification> modifications)
+        private static void GenerateModifications(StringBuilder config, List<ContextMenuModification> modifications)
         {
             config.AppendLine("// Modify existing context menu items");
             config.AppendLine("modify");
@@ -128,41 +131,33 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
             config.AppendLine();
         }
 
-        private void GenerateNewItems(StringBuilder config, IEnumerable<ContextMenuAction> actions)
+        private static void GenerateNewItems(StringBuilder config, List<ContextMenuAction> actions)
         {
             config.AppendLine("// PowerToys custom context menu items");
 
             // Group by scope for better organization
-            var fileActions = actions.Where(a => a.Scope == ContextScope.File).ToList();
-            var folderActions = actions.Where(a => a.Scope == ContextScope.Folder).ToList();
-            var backgroundActions = actions.Where(a => a.Scope == ContextScope.Background).ToList();
-            var allActions = actions.Where(a => a.Scope == ContextScope.All).ToList();
-
-            if (allActions.Any())
+            var scopeGroups = new Dictionary<ContextScope, (string Name, string Selector)>
             {
-                GenerateItemsForScope(config, "All contexts", allActions, "mode.extended");
-            }
+                { ContextScope.All, ("All contexts", "mode.extended") },
+                { ContextScope.File, ("Files only", "mode.file") },
+                { ContextScope.Folder, ("Folders only", "mode.directory") },
+                { ContextScope.Background, ("Background only", "mode.back") }
+            };
 
-            if (fileActions.Any())
+            foreach (var (scope, (scopeName, selector)) in scopeGroups)
             {
-                GenerateItemsForScope(config, "Files only", fileActions, "mode.file");
-            }
-
-            if (folderActions.Any())
-            {
-                GenerateItemsForScope(config, "Folders only", folderActions, "mode.directory");
-            }
-
-            if (backgroundActions.Any())
-            {
-                GenerateItemsForScope(config, "Background only", backgroundActions, "mode.back");
+                var scopeActions = actions.Where(a => a.Scope == scope).ToList();
+                if (scopeActions.Any())
+                {
+                    GenerateItemsForScope(config, scopeName, scopeActions, selector);
+                }
             }
         }
 
-        private void GenerateItemsForScope(StringBuilder config, string scopeName, List<ContextMenuAction> actions, string modeFilter)
+        private static void GenerateItemsForScope(StringBuilder config, string scopeName, List<ContextMenuAction> actions, string modeSelector)
         {
             config.AppendLine($"// {scopeName}");
-            config.AppendLine($"item(where={modeFilter})");
+            config.AppendLine($"item(where={modeSelector})");
             config.AppendLine("{");
 
             foreach (var action in actions)
@@ -210,25 +205,25 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
             config.AppendLine();
         }
 
-        private string EscapeString(string input)
+        private static string EscapeString(string input)
         {
             if (string.IsNullOrEmpty(input))
                 return "''";
 
-            // Shell uses single quotes, escape internal quotes
-            return $"'{input.Replace("'", "\\'")}'";
+            // Shell uses single quotes, escape both quotes and backslashes
+            return $"'{input.Replace("\\", "\\\\").Replace("'", "\\'")}'";
         }
 
-        private string EscapeComment(string input)
+        private static string EscapeComment(string input)
         {
             if (string.IsNullOrEmpty(input))
                 return "";
 
             // Remove problematic characters from comments
-            return input.Replace("*/", "").Replace("/*", "");
+            return input.Replace("*/", "").Replace("/*", "").Replace("\r", "").Replace("\n", " ");
         }
 
-        private string ExpandEnvironmentPath(string path)
+        private static string ExpandEnvironmentPath(string path)
         {
             if (string.IsNullOrEmpty(path))
                 return path;
@@ -239,9 +234,15 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
             }
             catch (Exception ex)
             {
-                Logger.LogError($"Failed to expand environment variables in path: {path}", ex);
+                Logger.LogWarning($"ShellManager: Failed to expand environment variables in path: {path} - {ex.Message}");
                 return path;
             }
+        }
+
+        public static string GeneratePreviewConfig(ContextMenuEditSettings settings)
+        {
+            // Dry-run mode for troubleshooting
+            return GenerateConfig(settings);
         }
     }
 }

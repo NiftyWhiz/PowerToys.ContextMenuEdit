@@ -23,11 +23,16 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
 
     public static class ContextMenuDiscovery
     {
-        private static readonly string[] RegistryRoots = {
-            @"HKEY_CLASSES_ROOT\*\shell",           // All files
-            @"HKEY_CLASSES_ROOT\Directory\shell",   // Folders
-            @"HKEY_CLASSES_ROOT\Directory\Background\shell", // Background
-            @"HKEY_CLASSES_ROOT\AllFilesystemObjects\shell", // Files and folders
+        private static readonly Dictionary<string, ContextScope> RegistryMappings = new()
+        {
+            { @"HKEY_CLASSES_ROOT\*\shell", ContextScope.File },
+            { @"HKEY_CLASSES_ROOT\Directory\shell", ContextScope.Folder },
+            { @"HKEY_CLASSES_ROOT\Directory\Background\shell", ContextScope.Background },
+            { @"HKEY_CLASSES_ROOT\AllFilesystemObjects\shell", ContextScope.All },
+            // Additional ShellEx context menu handlers
+            { @"HKEY_CLASSES_ROOT\*\ShellEx\ContextMenuHandlers", ContextScope.File },
+            { @"HKEY_CLASSES_ROOT\Directory\ShellEx\ContextMenuHandlers", ContextScope.Folder },
+            { @"HKEY_CLASSES_ROOT\Directory\Background\ShellEx\ContextMenuHandlers", ContextScope.Background },
         };
 
         public static List<ExistingContextMenuItem> DiscoverExistingItems()
@@ -36,8 +41,10 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
 
             try
             {
-                // Scan registry for legacy context menu items
-                items.AddRange(ScanRegistryContextItems());
+                // Scan registry for legacy context menu items (both 32-bit and 64-bit views)
+                items.AddRange(ScanRegistryContextItems(RegistryView.Default));
+                items.AddRange(ScanRegistryContextItems(RegistryView.Registry32));
+                items.AddRange(ScanRegistryContextItems(RegistryView.Registry64));
                 
                 // Parse existing Shell config for modifications
                 items.AddRange(ParseExistingShellConfig());
@@ -50,107 +57,116 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
                 Logger.LogError("Error discovering context menu items", ex);
             }
 
-            return items.DistinctBy(i => $"{i.Title}|{i.Command}").ToList();
+            return items.DistinctBy(i => $"{i.Title}|{i.Command}|{i.RegistryLocation}").ToList();
         }
 
-        private static List<ExistingContextMenuItem> ScanRegistryContextItems()
+        private static List<ExistingContextMenuItem> ScanRegistryContextItems(RegistryView view)
         {
             var items = new List<ExistingContextMenuItem>();
 
-            var registryMappings = new Dictionary<string, ContextScope>
-            {
-                { @"HKEY_CLASSES_ROOT\*\shell", ContextScope.File },
-                { @"HKEY_CLASSES_ROOT\Directory\shell", ContextScope.Folder },
-                { @"HKEY_CLASSES_ROOT\Directory\Background\shell", ContextScope.Background },
-                { @"HKEY_CLASSES_ROOT\AllFilesystemObjects\shell", ContextScope.All }
-            };
-
-            foreach (var (registryPath, scope) in registryMappings)
+            foreach (var (registryPath, scope) in RegistryMappings)
             {
                 try
                 {
-                    items.AddRange(ScanRegistryPath(registryPath, scope));
+                    items.AddRange(ScanRegistryPath(registryPath, scope, view));
                 }
                 catch (Exception ex)
                 {
-                    Logger.LogWarning($"Could not scan registry path {registryPath}: {ex.Message}");
+                    Logger.LogWarning($"ContextMenuDiscovery: Could not scan registry path {registryPath} (view: {view}): {ex.Message}");
                 }
             }
 
             return items;
         }
 
-        private static List<ExistingContextMenuItem> ScanRegistryPath(string registryPath, ContextScope scope)
+        private static List<ExistingContextMenuItem> ScanRegistryPath(string registryPath, ContextScope scope, RegistryView view)
         {
             var items = new List<ExistingContextMenuItem>();
             
             try
             {
                 var pathParts = registryPath.Split('\\');
-                var hive = pathParts[0] switch
+                var hiveKey = pathParts[0] switch
                 {
-                    "HKEY_CLASSES_ROOT" => Registry.ClassesRoot,
-                    "HKEY_CURRENT_USER" => Registry.CurrentUser,
-                    "HKEY_LOCAL_MACHINE" => Registry.LocalMachine,
+                    "HKEY_CLASSES_ROOT" => RegistryKey.OpenBaseKey(RegistryHive.ClassesRoot, view),
+                    "HKEY_CURRENT_USER" => RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view),
+                    "HKEY_LOCAL_MACHINE" => RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view),
                     _ => null
                 };
 
-                if (hive == null) return items;
+                if (hiveKey == null) return items;
 
-                var subKeyPath = string.Join("\\", pathParts.Skip(1));
-                
-                using var key = hive.OpenSubKey(subKeyPath, false);
-                if (key == null) return items;
-
-                foreach (var subKeyName in key.GetSubKeyNames())
+                using (hiveKey)
                 {
-                    try
+                    var subKeyPath = string.Join("\\", pathParts.Skip(1));
+                    
+                    using var key = hiveKey.OpenSubKey(subKeyPath, false);
+                    if (key == null) return items;
+
+                    foreach (var subKeyName in key.GetSubKeyNames())
                     {
-                        using var subKey = key.OpenSubKey(subKeyName);
-                        if (subKey == null) continue;
-
-                        var item = new ExistingContextMenuItem
+                        try
                         {
-                            Title = subKey.GetValue("", subKeyName)?.ToString() ?? subKeyName,
-                            RegistryLocation = $"{registryPath}\\{subKeyName}",
-                            DetectedScope = scope,
-                            IsLegacyItem = true
-                        };
+                            using var subKey = key.OpenSubKey(subKeyName);
+                            if (subKey == null) continue;
 
-                        // Try to get the command
-                        using var commandKey = subKey.OpenSubKey("command");
-                        if (commandKey != null)
-                        {
-                            var command = commandKey.GetValue("")?.ToString();
-                            if (!string.IsNullOrEmpty(command))
+                            var item = new ExistingContextMenuItem
                             {
-                                item.Command = command;
-                                item.SourceApp = DetectSourceApp(command);
+                                Title = subKey.GetValue("", subKeyName)?.ToString() ?? subKeyName,
+                                RegistryLocation = $"{registryPath}\\{subKeyName} ({view})",
+                                DetectedScope = scope,
+                                IsLegacyItem = true
+                            };
+
+                            // Handle ShellEx handlers differently from shell commands
+                            if (registryPath.Contains("ShellEx"))
+                            {
+                                // This is a COM handler, get the CLSID and try to resolve friendly name
+                                var clsid = subKey.GetValue("")?.ToString();
+                                if (!string.IsNullOrEmpty(clsid))
+                                {
+                                    item.Command = clsid;
+                                    item.SourceApp = ResolveComHandlerName(clsid);
+                                }
+                            }
+                            else
+                            {
+                                // Try to get the command
+                                using var commandKey = subKey.OpenSubKey("command");
+                                if (commandKey != null)
+                                {
+                                    var command = commandKey.GetValue("")?.ToString();
+                                    if (!string.IsNullOrEmpty(command))
+                                    {
+                                        item.Command = command;
+                                        item.SourceApp = DetectSourceApp(command);
+                                    }
+                                }
+                            }
+
+                            // Get icon if available
+                            var icon = subKey.GetValue("Icon")?.ToString();
+                            if (!string.IsNullOrEmpty(icon))
+                            {
+                                item.Icon = icon;
+                            }
+
+                            // Only add items with actual commands or CLSID
+                            if (!string.IsNullOrEmpty(item.Command))
+                            {
+                                items.Add(item);
                             }
                         }
-
-                        // Get icon if available
-                        var icon = subKey.GetValue("Icon")?.ToString();
-                        if (!string.IsNullOrEmpty(icon))
+                        catch (Exception ex)
                         {
-                            item.Icon = icon;
+                            Logger.LogWarning($"ContextMenuDiscovery: Error reading registry subkey {subKeyName}: {ex.Message}");
                         }
-
-                        // Only add items with actual commands
-                        if (!string.IsNullOrEmpty(item.Command))
-                        {
-                            items.Add(item);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.LogWarning($"Error reading registry subkey {subKeyName}: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Logger.LogWarning($"Error scanning registry path {registryPath}: {ex.Message}");
+                Logger.LogWarning($"ContextMenuDiscovery: Error scanning registry path {registryPath}: {ex.Message}");
             }
 
             return items;
@@ -182,9 +198,34 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
 
                 return "Unknown";
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                Logger.LogWarning($"ContextMenuDiscovery: Error detecting source app from command '{command}': {ex.Message}");
                 return "Unknown";
+            }
+        }
+
+        private static string ResolveComHandlerName(string clsid)
+        {
+            try
+            {
+                // Try to resolve CLSID to friendly name
+                using var clsidKey = Registry.ClassesRoot.OpenSubKey($"CLSID\\{clsid}");
+                if (clsidKey != null)
+                {
+                    var friendlyName = clsidKey.GetValue("")?.ToString();
+                    if (!string.IsNullOrEmpty(friendlyName))
+                    {
+                        return friendlyName;
+                    }
+                }
+
+                return $"COM Handler ({clsid[..8]}...)";
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning($"ContextMenuDiscovery: Error resolving COM handler {clsid}: {ex.Message}");
+                return "Unknown COM Handler";
             }
         }
 
@@ -194,6 +235,11 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
 
             try
             {
+                if (!ShellManager.IsShellInstalled())
+                {
+                    return items;
+                }
+
                 var configPath = ShellManager.GetShellConfigPath();
                 if (!File.Exists(configPath))
                 {
@@ -202,12 +248,17 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
 
                 // Parse existing Shell config to see what's already modified
                 var configContent = File.ReadAllText(configPath);
-                // This would require a simple NSS parser
-                // For MVP, we can skip this and just track in our own settings
+                // Simple parsing - look for PowerToys-generated content
+                if (configContent.Contains("// Generated by PowerToys ContextMenuEdit"))
+                {
+                    Logger.LogInfo("ContextMenuDiscovery: Found existing PowerToys Shell configuration");
+                    // For now, just log that we have existing config
+                    // Full NSS parser would be implemented in a future version
+                }
             }
             catch (Exception ex)
             {
-                Logger.LogWarning($"Could not parse existing Shell config: {ex.Message}");
+                Logger.LogWarning($"ContextMenuDiscovery: Could not parse existing Shell config: {ex.Message}");
             }
 
             return items;
@@ -226,39 +277,9 @@ namespace Microsoft.PowerToys.Settings.UI.ContextMenuEdit.Core
                 new() { Title = "Extract to folder", SourceApp = "WinRAR", DetectedScope = ContextScope.File },
                 new() { Title = "Send to Mail Recipient", SourceApp = "Windows", DetectedScope = ContextScope.File },
                 new() { Title = "Fax Recipient", SourceApp = "Windows", DetectedScope = ContextScope.File },
+                new() { Title = "Share", SourceApp = "Windows", DetectedScope = ContextScope.File },
+                new() { Title = "Cast to Device", SourceApp = "Windows", DetectedScope = ContextScope.File },
             };
-        }
-
-        private string EscapeString(string input)
-        {
-            if (string.IsNullOrEmpty(input))
-                return "''";
-
-            // Escape quotes and backslashes for Shell config
-            return "'" + input.Replace("\\", "\\\\").Replace("'", "\\'") + "'";
-        }
-
-        private string EscapeComment(string input)
-        {
-            if (string.IsNullOrEmpty(input))
-                return "";
-
-            return input.Replace("*/", "").Replace("/*", "");
-        }
-
-        private string ExpandEnvironmentPath(string path)
-        {
-            if (string.IsNullOrEmpty(path))
-                return path;
-
-            try
-            {
-                return Environment.ExpandEnvironmentVariables(path);
-            }
-            catch
-            {
-                return path;
-            }
         }
     }
 }
